@@ -1,16 +1,18 @@
+#!/usr/bin/env python
 import fire
 import records
 import requests
 from elasticsearch import Elasticsearch
 from elasticsearch import TransportError
+import logging
 
 
 def send_to_es(id, poi, es):
     try:
         esResponse = es.index(index='pelias', doc_type='venue', id=id, body=poi)
-        print(f'es resp = {esResponse}')
+        logging.debug(f'es resp = {esResponse}')
     except TransportError as err:
-        print(f'error while loading in es {err}')
+        logging.exception(f'error while loading in es {err}')
 
 
 def get_all_pois(pg_cnx):
@@ -29,26 +31,33 @@ def transform_to_pelias(poi, ds_url):
     resp = requests.get(ds_url + '/openstreetmap/venue', params=poi.as_dict())
 
     if resp.status_code != 200:
-        print(f'ERROR: {resp}')
+        logging.error(f'ERROR: {resp}')
         return
 
     pelias_poi = resp.json()
-    print(f'pelias poi = {pelias_poi}')
+    logging.debug(f'pelias poi = {pelias_poi}')
     return pelias_poi
 
 
 def import_to_pelias(pg='postgres://gis:gis@localhost/gis',
                      es='localhost:9200',
-                     ds_url='http://localhost:5000/synthesize'):
+                     ds='http://localhost:5000/synthesize'):
+    """
+    import all pois imported by imposm in a postgresql database to pelias
+    :param pg: postgresql connection string
+    :param es: elastic search url
+    :param ds: pelias document service url
+    """
     es = Elasticsearch([es])
 
     for poi in get_all_pois(pg):
-        print(f'poi = {poi}')
+        logging.info(f'poi = {poi}')
 
-        pelias_poi = transform_to_pelias(poi, ds_url)
+        pelias_poi = transform_to_pelias(poi, ds)
 
         send_to_es(poi.id, pelias_poi, es)
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
     fire.Fire(import_to_pelias)
