@@ -5,21 +5,23 @@ const _ = require('lodash');
 const Document = require('pelias-model').Document;
 const http = require('tiny-json-http');
 const elasticsearch = require('elasticsearch');
+const yargs = require('yargs');
 
 const LAYER = 'venue';
 const SOURCE = 'openstreetmap';
 
 async function get_all_pois(pg) {
-  const query = `select id, 
-    st_x(st_transform(geometry, 4326)) as lon, 
-    st_y(st_transform(geometry, 4326)) as lat, 
-    name 
-    from osm_poi_point where name <> '';`;
+  const query = `select id,
+    st_x(st_transform(geometry, 4326)) as lon,
+    st_y(st_transform(geometry, 4326)) as lat,
+    name
+    from osm_poi_point where name <> '' limit 100`;
 
   const pool = new Pool({
     connectionString: pg,
   })
 
+  console.log(`querying poi database`);
   const res = await pool.query(query);
 
   await pool.end();
@@ -78,7 +80,11 @@ function send_to_es(pelias_pois, es_host) {
     log: 'info'
   });
 
+  var nb_errors = 0,
+    nb_attempt = 0;
+
   pelias_pois.forEach(poi => {
+    nb_attempt++;
     poi.then(p => p.toESDocument().data)
       .then(async doc => {
         console.log("document send to es: ", JSON.stringify(doc, null, 4));
@@ -89,18 +95,55 @@ function send_to_es(pelias_pois, es_host) {
           body: doc
         });
       })
-      .catch(e => console.error("impossible to insert doc ", poi, "because ", e));
+      .catch(e => {
+        console.error("impossible to insert doc ", poi, "because ", e);
+        nb_errors++;
+      });
 
+    if (nb_errors > 0) {
+      console.error(`${nb_errors} errors /${nb_attempt} documents`)
+    }
   });
 }
 
-function import_poi_in_pelias(pg = 'postgres://gis:gis@172.18.0.5/gis',
-  es = 'localhost:9200',
-  pip = 'http://localhost:4200') {
+function import_poi_in_pelias(pg, es, pip) {
   get_all_pois(pg)
     .then(pois => convert_to_pelias(pois, pip))
     .then(pelias_pois => send_to_es(pelias_pois, es))
     .catch(e => setImmediate(() => { throw e }))
 }
 
-import_poi_in_pelias();
+let args = yargs
+  .usage('Usage: $0 [options]')
+  .options({
+    pg: {
+      describe: 'the connection-string to postgres',
+      type: 'string',
+      demandOption: true,
+      default: 'postgres://gis:gis@localhost/gis',
+      nargs: 1
+    }
+  })
+  .options({
+    es: {
+      describe: 'The host of ElasticSearch',
+      type: 'string',
+      demandOption: true,
+      default: 'localhost:9200',
+      nargs: 1
+    }
+  })
+  .options({
+    pip: {
+      describe: 'The url of the Point In Polygon service',
+      type: 'string',
+      demandOption: true,
+      default: 'http://localhost:4200',
+      nargs: 1
+    }
+  })
+  .help('h')
+  .alias('h', 'help')
+  .argv;
+
+import_poi_in_pelias(args.pg, args.es, args.pip);
