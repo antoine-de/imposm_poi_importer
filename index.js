@@ -9,19 +9,18 @@ const elasticsearch = require('elasticsearch');
 const LAYER = 'venue';
 const SOURCE = 'openstreetmap';
 
-async function get_all_pois() {
+async function get_all_pois(pg) {
   const query = `select id, 
     st_x(st_transform(geometry, 4326)) as lon, 
     st_y(st_transform(geometry, 4326)) as lat, 
     name 
-    from osm_poi_point where name <> '' limit 10;`;
+    from osm_poi_point where name <> '';`;
 
-  const pool = new Pool()
+  const pool = new Pool({
+    connectionString: pg,
+  })
 
   const res = await pool.query(query);
-
-  console.log('poi:', res.rows[0]);
-  console.log('poi:', res.rows[0].id);
 
   await pool.end();
   return res.rows;
@@ -48,10 +47,8 @@ function create_pelias_document(p) {
   return doc;
 }
 
-async function locate(pelias_poi) {
-  console.log(`pois ${pelias_poi}`);
-  const url = `http://localhost:4200/${pelias_poi.center_point.lon}/${pelias_poi.center_point.lat}`;
-  console.log(`curl  ${url}`);
+async function locate(pelias_poi, pip) {
+  const url = `${pip}/${pelias_poi.center_point.lon}/${pelias_poi.center_point.lat}`;
   try {
     const res = await http.get({ url });
 
@@ -64,31 +61,28 @@ async function locate(pelias_poi) {
     });
     return pelias_poi;
   } catch (e) {
-    console.log(`damn une erreur ${e}`, e)
+    setImmediate(() => { throw e });
   }
 }
 
-function convert_to_pelias(pois) {
-  console.log(`pois ${pois}`);
-
-
+function convert_to_pelias(pois, pip) {
   return pois.map(poi => {
     const doc = create_pelias_document(poi);
-    return locate(doc);
+    return locate(doc, pip);
   });
 }
 
-function send_to_es(pelias_pois) {
+function send_to_es(pelias_pois, es_host) {
+  const client = new elasticsearch.Client({
+    host: es_host,
+    log: 'info'
+  });
+
   pelias_pois.forEach(poi => {
     poi.then(p => p.toESDocument().data)
       .then(async doc => {
-        console.log(JSON.stringify(doc, null, 4));
-        const client = new elasticsearch.Client({
-          host: 'localhost:9200',
-          log: 'info'
-        });
-
-        return client.create({
+        console.log("document send to es: ", JSON.stringify(doc, null, 4));
+        return client.index({
           index: 'pelias',
           type: 'venue',
           id: 'imposm:' + doc.source_id,
@@ -100,10 +94,12 @@ function send_to_es(pelias_pois) {
   });
 }
 
-function import_poi_in_pelias() {
-  get_all_pois()
-    .then(pois => convert_to_pelias(pois))
-    .then(pelias_pois => send_to_es(pelias_pois))
+function import_poi_in_pelias(pg = 'postgres://gis:gis@172.18.0.5/gis',
+  es = 'localhost:9200',
+  pip = 'http://localhost:4200') {
+  get_all_pois(pg)
+    .then(pois => convert_to_pelias(pois, pip))
+    .then(pelias_pois => send_to_es(pelias_pois, es))
     .catch(e => setImmediate(() => { throw e }))
 }
 
