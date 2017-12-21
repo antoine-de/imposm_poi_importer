@@ -4,11 +4,16 @@ const { Document } = require('pelias-model');
 const http = require('tiny-json-http');
 const elasticsearch = require('elasticsearch');
 const yargs = require('yargs');
+const QueryStream = require('pg-query-stream');
+
+const { Writable } = require('stream');
 
 const LAYER = 'venue';
 const SOURCE = 'openstreetmap';
+const CURSOR_SIZE = 100;
 
-async function getAllPois(pg) {
+
+async function getAllPois(pg, cb) {
   const query = `select id,
     st_x(st_transform(geometry, 4326)) as lon,
     st_y(st_transform(geometry, 4326)) as lat,
@@ -18,12 +23,16 @@ async function getAllPois(pg) {
   const pool = new Pool({
     connectionString: pg,
   });
+  const client = await pool.connect();
 
   console.log('querying poi database');
-  const res = await pool.query(query);
-
-  await pool.end();
-  return res.rows;
+  const queryStream = new QueryStream(query, [], { batchSize: CURSOR_SIZE });
+  const stream = client.query(queryStream);
+  // release the client when the stream is finished
+  stream.on('end', () => { pool.end(); });
+  stream.on('data', (row) => {
+    cb(row);
+  });
 }
 
 function createPeliasDocument(p) {
@@ -106,10 +115,15 @@ function sendToEs(peliasPois, esHost) {
 }
 
 function importPoiInPelias(pg, es, pip) {
-  getAllPois(pg)
-    .then(pois => convertToPelias(pois, pip))
-    .then(peliasPois => sendToEs(peliasPois, es))
-    .catch(e => setImmediate(() => { throw e; }));
+  getAllPois(pg, (chunk) => {
+    console.log('chunk ', chunk);
+    const peliasPois = convertToPelias([chunk], pip);
+    sendToEs(peliasPois, es);
+  });
+  // getAllPois(pg)
+  //   .then(pois => convertToPelias(pois, pip))
+  //   .then(peliasPois => sendToEs(peliasPois, es))
+  //   .catch(e => setImmediate(() => { throw e; }));
 }
 
 const args = yargs
