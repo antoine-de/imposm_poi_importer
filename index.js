@@ -7,7 +7,7 @@ const yargs = require('yargs');
 const Cursor = require('pg-cursor');
 
 const LAYER = 'venue';
-const SOURCE = 'openstreetmap';
+const SOURCE = 'openstreetmap-postgres';
 const CURSOR_SIZE = 100;
 
 /*
@@ -15,11 +15,18 @@ const CURSOR_SIZE = 100;
  * the callback `cb` on those chunks
  */
 async function processAllPois(pg, cb) {
-  const query = `select id,
+  // we query both osm_poi_point and osm_poi_polygon
+  const query = `SELECT osm_id as id,
     st_x(st_transform(geometry, 4326)) as lon,
     st_y(st_transform(geometry, 4326)) as lat,
     name
-    from osm_poi_point where name <> ''`;
+    FROM osm_poi_point WHERE name <> ''
+    UNION ALL
+    SELECT osm_id as id,
+    st_x(st_transform(geometry, 4326)) as lon,
+    st_y(st_transform(geometry, 4326)) as lat,
+    name
+    FROM osm_poi_polygon WHERE name <> ''`;
 
   const pool = new Pool({
     connectionString: pg,
@@ -42,7 +49,7 @@ async function processAllPois(pg, cb) {
       return;
     }
     nbDone += ch.length;
-    console.log(`${nbDone} elements proceced`);
+    console.log(`${nbDone} elements processed`);
     cb(ch); // call the callback on the rows
     cursor.read(CURSOR_SIZE, job); // read the next chunk
   };
