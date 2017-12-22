@@ -1,0 +1,32 @@
+{
+  "name": "imposm_poi_importer",
+  "version": "1.0.0",
+  "description": "import poi from a imposmdb to pelias",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/QwantResearch/imposm_poi_importer.git"
+  },
+  "keywords": [
+    "pelias",
+    "imposm3",
+    "poi"
+  ],
+  "author": "QwantResearch",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/QwantResearch/imposm_poi_importer/issues"
+  },
+  "homepage": "https://github.com/QwantResearch/imposm_poi_importer#readme",
+  "dependencies": {
+    "elasticsearch": "^14.0.0",
+    "lodash": "^4.17.4",
+    "pelias-model": "^5.3.0",
+    "pg": "^7.4.0",
+    "tiny-json-http": "^5.3.1",
+    "yargs": "^10.0.3"
+  }
+}
