@@ -38,7 +38,7 @@ async function processAllPois(pg, cb) {
     }
     nbDone += ch.length;
     console.log(`${nbDone} elements proceced`);
-    cb(Promise.resolve(ch));
+    cb(ch);
     cursor.read(CURSOR_SIZE, job);
   };
   cursor.read(CURSOR_SIZE, job);
@@ -130,8 +130,8 @@ function importPoiInPelias(pg, es, pip) {
   });
 
   processAllPois(pg, (chunk) => {
-    chunk.then(pois => convertToPelias(pois, pip))
-      .then(peliasPois => sendToEs(peliasPois, esClient));
+    const peliasPois = convertToPelias(chunk, pip);
+    sendToEs(peliasPois, esClient);
   });
 }
 
