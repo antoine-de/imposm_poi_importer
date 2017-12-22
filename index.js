@@ -10,8 +10,7 @@ const LAYER = 'venue';
 const SOURCE = 'openstreetmap';
 const CURSOR_SIZE = 100;
 
-
-async function getAllPois(pg, cb) {
+async function processAllPois(pg, cb) {
   const query = `select id,
     st_x(st_transform(geometry, 4326)) as lon,
     st_y(st_transform(geometry, 4326)) as lat,
@@ -27,16 +26,14 @@ async function getAllPois(pg, cb) {
 
   let nbDone = 0;
   const job = async (err, ch) => {
-    console.log('youhou');
     if (err) {
       throw err;
     }
     console.log('nb elt: ', ch.length);
     if (ch.length === 0) {
-      console.log('closing connection ');
+      console.log('closing connection');
       await client.end();
-      await pool.end();
-      console.log('connection closed ');
+      console.log('connection closed');
       return;
     }
     nbDone += ch.length;
@@ -74,14 +71,12 @@ async function locate(peliasPoi, pip) {
     const res = await http.get({ url });
 
     Object.entries(res.body).forEach(([layer, admin]) => {
-      if (admin[0].abbr) { // debug
-        peliasPoi.addParent(
-          layer,
-          admin[0].name,
-          admin[0].id.toString(),
-          admin[0].abbr,
-        );
-      }
+      peliasPoi.addParent(
+        layer,
+        admin[0].name,
+        admin[0].id.toString(),
+        admin[0].abbr,
+      );
     });
   } catch (e) {
     setImmediate(() => { throw e; });
@@ -96,12 +91,7 @@ function convertToPelias(pois, pip) {
   });
 }
 
-async function sendToEs(peliasPois, esHost) {
-  const client = new elasticsearch.Client({
-    host: esHost,
-    log: 'info',
-  });
-
+async function sendToEs(peliasPois, esClient) {
   const createAction = doc => ({
     index: {
       _index: 'pelias',
@@ -110,33 +100,39 @@ async function sendToEs(peliasPois, esHost) {
     },
   });
 
-  const actionsPromises = peliasPois.map((poi) => {
-    return poi.then(p => p.toESDocument().data)
-      .then(doc => [createAction(doc), doc]);
-  });
+  const actionsPromises = peliasPois.map(poi =>
+    poi
+      .then(p => p.toESDocument().data)
+      .then(doc => [createAction(doc), doc]));
 
-  console.log('actions = ', actionsPromises);
   const actions = await Promise.all(actionsPromises);
 
   const bulkActions = _.flatten(actions);
-  bulkActions.forEach(a => console.log(JSON.stringify(a)));
-  
-  client.bulk({
+  // bulkActions.forEach(a => console.log(JSON.stringify(a)));
+
+  esClient.bulk({
     body: bulkActions,
   }, (err, r) => {
     if (err) {
       throw err;
     }
-    console.log('es response ', r);
+    if (r.errors) {
+      console.log(`error :: ${r.errors}`);
+      console.log(JSON.stringify(r, null, 2));
+    }
   });
 }
 
 function importPoiInPelias(pg, es, pip) {
-  getAllPois(pg, (chunk) => {
-    console.log('on traite un chunk');
+  const esClient = new elasticsearch.Client({
+    host: es,
+    log: 'info',
+  });
+
+  processAllPois(pg, (chunk) => {
     chunk.then(pois => convertToPelias(pois, pip))
-      .then(peliasPois => sendToEs(peliasPois, es));
-  }).then(() => console.log('done'));
+      .then(peliasPois => sendToEs(peliasPois, esClient));
+  });
 }
 
 const args = yargs
