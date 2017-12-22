@@ -10,6 +10,10 @@ const LAYER = 'venue';
 const SOURCE = 'openstreetmap';
 const CURSOR_SIZE = 100;
 
+/*
+ * processAllPois query all the database pois with chunk and call
+ * the callback `cb` on those chunks
+ */
 async function processAllPois(pg, cb) {
   const query = `select id,
     st_x(st_transform(geometry, 4326)) as lon,
@@ -22,6 +26,7 @@ async function processAllPois(pg, cb) {
   });
   const client = await pool.connect();
   console.log('querying poi database');
+  // we use cursor for efficient query pagination
   const cursor = client.query(new Cursor(query));
 
   let nbDone = 0;
@@ -38,8 +43,8 @@ async function processAllPois(pg, cb) {
     }
     nbDone += ch.length;
     console.log(`${nbDone} elements proceced`);
-    cb(ch);
-    cursor.read(CURSOR_SIZE, job);
+    cb(ch); // call the callback on the rows
+    cursor.read(CURSOR_SIZE, job); // read the next chunk
   };
   cursor.read(CURSOR_SIZE, job);
 }
@@ -65,17 +70,19 @@ function createPeliasDocument(p) {
   return doc;
 }
 
+/*
+ * Call Point In Polygon to query the Who's On First hierarchy for the POI
+ */
 async function locate(peliasPoi, pip) {
   const url = `${pip}/${peliasPoi.center_point.lon}/${peliasPoi.center_point.lat}`;
   try {
     const res = await http.get({ url });
-
-    Object.entries(res.body).forEach(([layer, admin]) => {
+    _.forEach(res.body, ([{ name, id, abbr }], layer) => {
       peliasPoi.addParent(
         layer,
-        admin[0].name,
-        admin[0].id.toString(),
-        admin[0].abbr,
+        name,
+        id.toString(),
+        abbr,
       );
     });
   } catch (e) {
@@ -105,22 +112,19 @@ async function sendToEs(peliasPois, esClient) {
       .then(p => p.toESDocument().data)
       .then(doc => [createAction(doc), doc]));
 
-  const actions = await Promise.all(actionsPromises);
-
-  const bulkActions = _.flatten(actions);
-  // bulkActions.forEach(a => console.log(JSON.stringify(a)));
-
-  esClient.bulk({
-    body: bulkActions,
-  }, (err, r) => {
-    if (err) {
+  try {
+    const actions = await Promise.all(actionsPromises);
+    const bulkActions = _.flatten(actions);
+    // bulkActions.forEach(a => console.log(JSON.stringify(a)));
+    esClient.bulk({
+      body: bulkActions,
+    }).catch((err) => {
+      setImmediate(() => { throw err; });
       throw err;
-    }
-    if (r.errors) {
-      console.log(`error :: ${r.errors}`);
-      console.log(JSON.stringify(r, null, 2));
-    }
-  });
+    });
+  } catch (err) {
+    setImmediate(() => { throw err; });
+  }
 }
 
 function importPoiInPelias(pg, es, pip) {
