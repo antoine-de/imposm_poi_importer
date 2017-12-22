@@ -4,9 +4,7 @@ const { Document } = require('pelias-model');
 const http = require('tiny-json-http');
 const elasticsearch = require('elasticsearch');
 const yargs = require('yargs');
-const QueryStream = require('pg-query-stream');
-
-const { Writable } = require('stream');
+const Cursor = require('pg-cursor');
 
 const LAYER = 'venue';
 const SOURCE = 'openstreetmap';
@@ -18,21 +16,35 @@ async function getAllPois(pg, cb) {
     st_x(st_transform(geometry, 4326)) as lon,
     st_y(st_transform(geometry, 4326)) as lat,
     name
-    from osm_poi_point where name <> '' limit 100`;
+    from osm_poi_point where name <> ''`;
 
   const pool = new Pool({
     connectionString: pg,
   });
   const client = await pool.connect();
-
   console.log('querying poi database');
-  const queryStream = new QueryStream(query, [], { batchSize: CURSOR_SIZE });
-  const stream = client.query(queryStream);
-  // release the client when the stream is finished
-  stream.on('end', () => { pool.end(); });
-  stream.on('data', (row) => {
-    cb(row);
-  });
+  const cursor = client.query(new Cursor(query));
+
+  let nbDone = 0;
+  const job = async (err, ch) => {
+    console.log('youhou');
+    if (err) {
+      throw err;
+    }
+    console.log('nb elt: ', ch.length);
+    if (ch.length === 0) {
+      console.log('closing connection ');
+      await client.end();
+      await pool.end();
+      console.log('connection closed ');
+      return;
+    }
+    nbDone += ch.length;
+    console.log(`${nbDone} elements proceced`);
+    cb(Promise.resolve(ch));
+    cursor.read(CURSOR_SIZE, job);
+  };
+  cursor.read(CURSOR_SIZE, job);
 }
 
 function createPeliasDocument(p) {
@@ -62,12 +74,14 @@ async function locate(peliasPoi, pip) {
     const res = await http.get({ url });
 
     Object.entries(res.body).forEach(([layer, admin]) => {
-      peliasPoi.addParent(
-        layer,
-        admin[0].name,
-        admin[0].id.toString(),
-        admin[0].abbr,
-      );
+      if (admin[0].abbr) { // debug
+        peliasPoi.addParent(
+          layer,
+          admin[0].name,
+          admin[0].id.toString(),
+          admin[0].abbr,
+        );
+      }
     });
   } catch (e) {
     setImmediate(() => { throw e; });
@@ -82,48 +96,47 @@ function convertToPelias(pois, pip) {
   });
 }
 
-function sendToEs(peliasPois, esHost) {
+async function sendToEs(peliasPois, esHost) {
   const client = new elasticsearch.Client({
     host: esHost,
     log: 'info',
   });
 
-  let nbErrors = 0;
-  let nbAttempt = 0;
+  const createAction = doc => ({
+    index: {
+      _index: 'pelias',
+      _type: 'venue',
+      _id: `imposm:${doc.source_id}`,
+    },
+  });
 
-  peliasPois.forEach((poi) => {
-    nbAttempt += 1;
-    poi.then(p => p.toESDocument().data)
-      .then(async (doc) => {
-        console.log('document send to es: ', JSON.stringify(doc, null, 4));
-        return client.index({
-          index: 'pelias',
-          type: 'venue',
-          id: `imposm:${doc.source_id}`,
-          body: doc,
-        });
-      })
-      .catch((e) => {
-        console.error('impossible to insert doc ', poi, 'because ', e);
-        nbErrors += 1;
-      });
+  const actionsPromises = peliasPois.map((poi) => {
+    return poi.then(p => p.toESDocument().data)
+      .then(doc => [createAction(doc), doc]);
+  });
 
-    if (nbErrors > 0) {
-      console.error(`${nbErrors} errors /${nbAttempt} documents`);
+  console.log('actions = ', actionsPromises);
+  const actions = await Promise.all(actionsPromises);
+
+  const bulkActions = _.flatten(actions);
+  bulkActions.forEach(a => console.log(JSON.stringify(a)));
+  
+  client.bulk({
+    body: bulkActions,
+  }, (err, r) => {
+    if (err) {
+      throw err;
     }
+    console.log('es response ', r);
   });
 }
 
 function importPoiInPelias(pg, es, pip) {
   getAllPois(pg, (chunk) => {
-    console.log('chunk ', chunk);
-    const peliasPois = convertToPelias([chunk], pip);
-    sendToEs(peliasPois, es);
-  });
-  // getAllPois(pg)
-  //   .then(pois => convertToPelias(pois, pip))
-  //   .then(peliasPois => sendToEs(peliasPois, es))
-  //   .catch(e => setImmediate(() => { throw e; }));
+    console.log('on traite un chunk');
+    chunk.then(pois => convertToPelias(pois, pip))
+      .then(peliasPois => sendToEs(peliasPois, es));
+  }).then(() => console.log('done'));
 }
 
 const args = yargs
