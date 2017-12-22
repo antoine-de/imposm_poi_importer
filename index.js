@@ -19,12 +19,14 @@ async function processAllPois(pg, cb) {
   const query = `SELECT osm_id as id,
     st_x(st_transform(geometry, 4326)) as lon,
     st_y(st_transform(geometry, 4326)) as lat,
+    poi_class(subclass, mapping_key) AS class,
     name
     FROM osm_poi_point WHERE name <> ''
     UNION ALL
     SELECT osm_id as id,
     st_x(st_transform(geometry, 4326)) as lon,
     st_y(st_transform(geometry, 4326)) as lat,
+    poi_class(subclass, mapping_key) AS class,
     name
     FROM osm_poi_polygon WHERE name <> ''`;
 
@@ -72,6 +74,9 @@ function createPeliasDocument(p) {
   }
   if (!_.isEmpty(_.trim(p.postcode))) {
     doc.setAddress('zip', _.trim(p.postcode));
+  }
+  if (!_.isEmpty(_.trim(p.class))) {
+    doc.addCategory(p.class);
   }
 
   return doc;
